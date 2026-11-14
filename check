@@ -1,0 +1,757 @@
+import os
+import joblib
+import numpy as np
+import pandas as pd
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix
+)
+
+from xgboost import XGBClassifier
+
+
+# ==========================================
+# DAY 4: FEATURE ENGINEERING AND ENSEMBLES
+# ==========================================
+
+df_day4 = df.copy()
+
+
+# ------------------------------------------
+# DATA CLEANING
+# ------------------------------------------
+
+df_day4["TotalCharges"] = pd.to_numeric(
+    df_day4["TotalCharges"],
+    errors="coerce"
+)
+
+df_day4["TotalCharges"] = df_day4["TotalCharges"].fillna(
+    df_day4["TotalCharges"].median()
+)
+
+
+# ------------------------------------------
+# FEATURE ENGINEERING
+# ------------------------------------------
+
+df_day4["TenureGroup"] = pd.cut(
+    df_day4["tenure"],
+    bins=[-1, 12, 24, 48, np.inf],
+    labels=["New", "Short", "Medium", "Long"]
+)
+
+df_day4["AvgChargePerMonth"] = (
+    df_day4["TotalCharges"]
+    / df_day4["tenure"].replace(0, 1)
+)
+
+df_day4["LongTermContract"] = (
+    df_day4["Contract"] != "Month-to-month"
+).astype(int)
+
+df_day4["AutomaticPayment"] = (
+    df_day4["PaymentMethod"].isin(
+        [
+            "Bank transfer (automatic)",
+            "Credit card (automatic)"
+        ]
+    )
+).astype(int)
+
+service_columns = [
+    "PhoneService",
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport",
+    "StreamingTV",
+    "StreamingMovies"
+]
+
+service_columns = [
+    column
+    for column in service_columns
+    if column in df_day4.columns
+]
+
+df_day4["ServiceCount"] = (
+    df_day4[service_columns]
+    .eq("Yes")
+    .sum(axis=1)
+)
+
+protection_columns = [
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport"
+]
+
+protection_columns = [
+    column
+    for column in protection_columns
+    if column in df_day4.columns
+]
+
+df_day4["HasProtectionService"] = (
+    df_day4[protection_columns]
+    .eq("Yes")
+    .any(axis=1)
+    .astype(int)
+)
+
+
+# ------------------------------------------
+# PREPARE TARGET
+# ------------------------------------------
+
+if df_day4["Churn"].dtype == "object":
+    df_day4["Churn"] = df_day4["Churn"].map(
+        {
+            "No": 0,
+            "Yes": 1
+        }
+    )
+
+if "customerID" in df_day4.columns:
+    df_day4 = df_day4.drop(
+        columns=["customerID"]
+    )
+
+X_day4 = df_day4.drop(
+    columns=["Churn"]
+)
+
+y_day4 = df_day4["Churn"]
+
+
+# ------------------------------------------
+# TRAIN-TEST SPLIT
+# ------------------------------------------
+
+X_train_day4, X_test_day4, y_train_day4, y_test_day4 = train_test_split(
+    X_day4,
+    y_day4,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_day4
+)
+
+print("Training shape:", X_train_day4.shape)
+print("Testing shape:", X_test_day4.shape)
+
+
+# ------------------------------------------
+# IDENTIFY COLUMN TYPES
+# ------------------------------------------
+
+numerical_columns_day4 = (
+    X_train_day4
+    .select_dtypes(include=["number"])
+    .columns
+    .tolist()
+)
+
+categorical_columns_day4 = (
+    X_train_day4
+    .select_dtypes(
+        include=["object", "category", "bool"]
+    )
+    .columns
+    .tolist()
+)
+
+print("\nNumerical columns:")
+print(numerical_columns_day4)
+
+print("\nCategorical columns:")
+print(categorical_columns_day4)
+
+
+# ------------------------------------------
+# PREPROCESSING PIPELINE
+# ------------------------------------------
+
+numerical_pipeline_day4 = Pipeline([
+    (
+        "imputer",
+        SimpleImputer(strategy="median")
+    ),
+    (
+        "scaler",
+        StandardScaler()
+    )
+])
+
+categorical_pipeline_day4 = Pipeline([
+    (
+        "imputer",
+        SimpleImputer(strategy="most_frequent")
+    ),
+    (
+        "encoder",
+        OneHotEncoder(
+            handle_unknown="ignore",
+            sparse_output=False
+        )
+    )
+])
+
+preprocessor_day4 = ColumnTransformer([
+    (
+        "numerical",
+        numerical_pipeline_day4,
+        numerical_columns_day4
+    ),
+    (
+        "categorical",
+        categorical_pipeline_day4,
+        categorical_columns_day4
+    )
+])
+
+
+# ==========================================
+# RANDOM FOREST
+# ==========================================
+
+random_forest_day4 = RandomForestClassifier(
+    n_estimators=200,
+    max_depth=10,
+    min_samples_split=5,
+    min_samples_leaf=2,
+    class_weight="balanced",
+    random_state=42,
+    n_jobs=-1
+)
+
+rf_pipeline_day4 = Pipeline([
+    (
+        "preprocessor",
+        preprocessor_day4
+    ),
+    (
+        "model",
+        random_forest_day4
+    )
+])
+
+rf_pipeline_day4.fit(
+    X_train_day4,
+    y_train_day4
+)
+
+rf_predictions_day4 = rf_pipeline_day4.predict(
+    X_test_day4
+)
+
+rf_accuracy_day4 = accuracy_score(
+    y_test_day4,
+    rf_predictions_day4
+)
+
+rf_precision_day4 = precision_score(
+    y_test_day4,
+    rf_predictions_day4,
+    zero_division=0
+)
+
+rf_recall_day4 = recall_score(
+    y_test_day4,
+    rf_predictions_day4,
+    zero_division=0
+)
+
+rf_f1_day4 = f1_score(
+    y_test_day4,
+    rf_predictions_day4,
+    zero_division=0
+)
+
+print("\n================================")
+print("RANDOM FOREST RESULTS")
+print("================================")
+
+print("Accuracy:", rf_accuracy_day4)
+print("Precision:", rf_precision_day4)
+print("Recall:", rf_recall_day4)
+print("F1 Score:", rf_f1_day4)
+
+print("\nClassification Report:")
+print(
+    classification_report(
+        y_test_day4,
+        rf_predictions_day4,
+        zero_division=0
+    )
+)
+
+print("Confusion Matrix:")
+print(
+    confusion_matrix(
+        y_test_day4,
+        rf_predictions_day4
+    )
+)
+
+
+# ==========================================
+# XGBOOST
+# ==========================================
+
+negative_count = (
+    y_train_day4 == 0
+).sum()
+
+positive_count = (
+    y_train_day4 == 1
+).sum()
+
+scale_pos_weight = (
+    negative_count / positive_count
+)
+
+print(
+    "\nScale positive weight:",
+    scale_pos_weight
+)
+
+xgboost_day4 = XGBClassifier(
+    n_estimators=200,
+    max_depth=4,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    scale_pos_weight=scale_pos_weight,
+    eval_metric="logloss",
+    random_state=42,
+    n_jobs=-1
+)
+
+xgb_pipeline_day4 = Pipeline([
+    (
+        "preprocessor",
+        preprocessor_day4
+    ),
+    (
+        "model",
+        xgboost_day4
+    )
+])
+
+xgb_pipeline_day4.fit(
+    X_train_day4,
+    y_train_day4
+)
+
+xgb_predictions_day4 = xgb_pipeline_day4.predict(
+    X_test_day4
+)
+
+xgb_accuracy_day4 = accuracy_score(
+    y_test_day4,
+    xgb_predictions_day4
+)
+
+xgb_precision_day4 = precision_score(
+    y_test_day4,
+    xgb_predictions_day4,
+    zero_division=0
+)
+
+xgb_recall_day4 = recall_score(
+    y_test_day4,
+    xgb_predictions_day4,
+    zero_division=0
+)
+
+xgb_f1_day4 = f1_score(
+    y_test_day4,
+    xgb_predictions_day4,
+    zero_division=0
+)
+
+print("\n================================")
+print("XGBOOST RESULTS")
+print("================================")
+
+print("Accuracy:", xgb_accuracy_day4)
+print("Precision:", xgb_precision_day4)
+print("Recall:", xgb_recall_day4)
+print("F1 Score:", xgb_f1_day4)
+
+print("\nClassification Report:")
+print(
+    classification_report(
+        y_test_day4,
+        xgb_predictions_day4,
+        zero_division=0
+    )
+)
+
+print("Confusion Matrix:")
+print(
+    confusion_matrix(
+        y_test_day4,
+        xgb_predictions_day4
+    )
+)
+
+
+# ==========================================
+# RANDOM FOREST WITH PCA
+# ==========================================
+
+rf_pca_pipeline_day4 = Pipeline([
+    (
+        "preprocessor",
+        preprocessor_day4
+    ),
+    (
+        "pca",
+        PCA(
+            n_components=0.95,
+            random_state=42
+        )
+    ),
+    (
+        "model",
+        RandomForestClassifier(
+            n_estimators=200,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            class_weight="balanced",
+            random_state=42,
+            n_jobs=-1
+        )
+    )
+])
+
+rf_pca_pipeline_day4.fit(
+    X_train_day4,
+    y_train_day4
+)
+
+rf_pca_predictions_day4 = rf_pca_pipeline_day4.predict(
+    X_test_day4
+)
+
+rf_pca_accuracy_day4 = accuracy_score(
+    y_test_day4,
+    rf_pca_predictions_day4
+)
+
+rf_pca_precision_day4 = precision_score(
+    y_test_day4,
+    rf_pca_predictions_day4,
+    zero_division=0
+)
+
+rf_pca_recall_day4 = recall_score(
+    y_test_day4,
+    rf_pca_predictions_day4,
+    zero_division=0
+)
+
+rf_pca_f1_day4 = f1_score(
+    y_test_day4,
+    rf_pca_predictions_day4,
+    zero_division=0
+)
+
+print("\n================================")
+print("RANDOM FOREST + PCA RESULTS")
+print("================================")
+
+print("Accuracy:", rf_pca_accuracy_day4)
+print("Precision:", rf_pca_precision_day4)
+print("Recall:", rf_pca_recall_day4)
+print("F1 Score:", rf_pca_f1_day4)
+
+print("\nClassification Report:")
+print(
+    classification_report(
+        y_test_day4,
+        rf_pca_predictions_day4,
+        zero_division=0
+    )
+)
+
+print("Confusion Matrix:")
+print(
+    confusion_matrix(
+        y_test_day4,
+        rf_pca_predictions_day4
+    )
+)
+
+number_of_components = (
+    rf_pca_pipeline_day4
+    .named_steps["pca"]
+    .n_components_
+)
+
+explained_variance = (
+    rf_pca_pipeline_day4
+    .named_steps["pca"]
+    .explained_variance_ratio_
+    .sum()
+)
+
+print(
+    "\nPCA components retained:",
+    number_of_components
+)
+
+print(
+    "Explained variance retained:",
+    explained_variance
+)
+
+
+# ==========================================
+# COMPARE DAY 4 MODELS
+# ==========================================
+
+day4_results = [
+    {
+        "model": "Random Forest",
+        "accuracy": rf_accuracy_day4,
+        "precision": rf_precision_day4,
+        "recall": rf_recall_day4,
+        "f1_score": rf_f1_day4,
+        "pipeline": rf_pipeline_day4
+    },
+    {
+        "model": "XGBoost",
+        "accuracy": xgb_accuracy_day4,
+        "precision": xgb_precision_day4,
+        "recall": xgb_recall_day4,
+        "f1_score": xgb_f1_day4,
+        "pipeline": xgb_pipeline_day4
+    },
+    {
+        "model": "Random Forest + PCA",
+        "accuracy": rf_pca_accuracy_day4,
+        "precision": rf_pca_precision_day4,
+        "recall": rf_pca_recall_day4,
+        "f1_score": rf_pca_f1_day4,
+        "pipeline": rf_pca_pipeline_day4
+    }
+]
+
+day4_results_table = pd.DataFrame([
+    {
+        "Model": result["model"],
+        "Accuracy": result["accuracy"],
+        "Precision": result["precision"],
+        "Recall": result["recall"],
+        "F1 Score": result["f1_score"]
+    }
+    for result in day4_results
+])
+
+day4_results_table = (
+    day4_results_table
+    .sort_values(
+        by=["Recall", "F1 Score"],
+        ascending=False
+    )
+    .reset_index(drop=True)
+)
+
+print("\n================================")
+print("DAY 4 MODEL COMPARISON")
+print("================================")
+
+print(day4_results_table)
+
+
+# ==========================================
+# SELECT DAY 4 CHAMPION BY RECALL
+# ==========================================
+
+day4_champion = max(
+    day4_results,
+    key=lambda result: (
+        result["recall"],
+        result["f1_score"]
+    )
+)
+
+day4_champion_name = day4_champion["model"]
+day4_champion_model = day4_champion["pipeline"]
+day4_champion_recall = day4_champion["recall"]
+day4_champion_f1 = day4_champion["f1_score"]
+
+print("\nDay 4 Champion:", day4_champion_name)
+print("Champion Recall:", day4_champion_recall)
+print("Champion F1 Score:", day4_champion_f1)
+
+
+# ==========================================
+# PCA CONCLUSION
+# ==========================================
+
+print(
+    "\nRandom Forest without PCA recall:",
+    rf_recall_day4
+)
+
+print(
+    "Random Forest with PCA recall:",
+    rf_pca_recall_day4
+)
+
+if rf_pca_recall_day4 > rf_recall_day4:
+    print(
+        "PCA improved Random Forest recall."
+    )
+
+elif rf_pca_recall_day4 < rf_recall_day4:
+    print(
+        "PCA reduced Random Forest recall. "
+        "The non-PCA version is preferable."
+    )
+
+else:
+    print(
+        "PCA and non-PCA Random Forest "
+        "produced the same recall."
+    )
+
+
+# ==========================================
+# COMPARE WITH DAY 3 SVM
+# ==========================================
+
+day3_svm_recall = 0.00
+
+print(
+    "\nReplace day3_svm_recall = 0.00 "
+    "with your actual Day 3 test recall."
+)
+
+print(
+    "Day 3 SVM Recall:",
+    day3_svm_recall
+)
+
+print(
+    "Day 4 Champion Recall:",
+    day4_champion_recall
+)
+
+if day4_champion_recall > day3_svm_recall:
+    print(
+        "Day 4 champion has higher recall "
+        "than the Day 3 SVM."
+    )
+
+elif day4_champion_recall < day3_svm_recall:
+    print(
+        "Day 3 SVM still has higher recall."
+    )
+
+else:
+    print(
+        "Day 3 SVM and Day 4 champion "
+        "have equal recall."
+    )
+
+
+# ==========================================
+# SAVE DAY 4 CHAMPION
+# ==========================================
+
+os.makedirs(
+    "model",
+    exist_ok=True
+)
+
+joblib.dump(
+    day4_champion_model,
+    "model/day4_champion.pkl"
+)
+
+day4_metadata = {
+    "model_name": day4_champion_name,
+    "primary_metric": "recall",
+    "recall": day4_champion_recall,
+    "f1_score": day4_champion_f1,
+    "input_features": X_day4.columns.tolist()
+}
+
+joblib.dump(
+    day4_metadata,
+    "model/day4_metadata.pkl"
+)
+
+day4_results_table.to_csv(
+    "model/day4_model_comparison.csv",
+    index=False
+)
+
+print(
+    "\nModel saved as: model/day4_champion.pkl"
+)
+
+print(
+    "Metadata saved as: model/day4_metadata.pkl"
+)
+
+print(
+    "Comparison saved as: "
+    "model/day4_model_comparison.csv"
+)
+
+
+# ==========================================
+# LOAD AND VERIFY SAVED MODEL
+# ==========================================
+
+loaded_day4_model = joblib.load(
+    "model/day4_champion.pkl"
+)
+
+loaded_predictions = loaded_day4_model.predict(
+    X_test_day4
+)
+
+loaded_model_recall = recall_score(
+    y_test_day4,
+    loaded_predictions,
+    zero_division=0
+)
+
+print(
+    "\nLoaded model recall:",
+    loaded_model_recall
+)
+
+if np.isclose(
+    loaded_model_recall,
+    day4_champion_recall
+):
+    print(
+        "Saved model verification successful."
+    )
+else:
+    print(
+        "Loaded model recall is different. "
+        "Check the saved pipeline."
+    )
